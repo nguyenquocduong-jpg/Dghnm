@@ -1,165 +1,214 @@
-#include "ns3/core-module.h"
-#include "ns3/network-module.h"
-#include "ns3/internet-module.h"
-#include "ns3/point-to-point-module.h"
-#include "ns3/applications-module.h"
-#include "ns3/error-model.h"
-#include <fstream>
-#include <cstdlib>
-#include <cmath>
-#include <iomanip>
-#include <stdio.h>
-#include <unistd.h>
+import csv
+import os
+import random
+import time
+import matplotlib.pyplot as plt
 
-using namespace ns3;
+# ==========================================
+# Thông số Case Study 2: Long Fat Network (LFN)
+# ==========================================
+BANDWIDTH_MBPS = 1000.0  # Băng thông 1 Gbps
+RTT_MS = 600.0           # RTT vệ tinh = 600 ms
+RTT_SECONDS = RTT_MS / 1000.0
+PACKET_LOSS = 0.02       # Nhiễu sóng mất gói 2%
+BDP_MB = (BANDWIDTH_MBPS * RTT_SECONDS) / 8.0  # BDP = 75 MB
+FILE_SIZE_GB = 50.0      # Dung lượng file giả định
 
-// Thông số Case Study 2: Long Fat Network (LFN)
-const double BANDWIDTH_MBPS = 1000.0; // Băng thông 1 Gbps
-const double RTT_MS = 600.0;          // RTT vệ tinh = 600 ms
-const double RTT_SECONDS = RTT_MS / 1000.0;
-const double PACKET_LOSS = 0.02;      // Nhiễu sóng mất gói 2%
-const double BDP_MB = (BANDWIDTH_MBPS * RTT_SECONDS) / 8.0; // BDP = 75 MB
+# Biến trạng thái mô phỏng
+g_tcp_cwnd_mb = 5.0
+g_tcp_throughput = 100.0
+g_udp_throughput = 980.0
+g_bbr_throughput = 990.0
+g_tcp_eff = 10.0
+g_udp_eff = 98.0
+g_bbr_eff = 99.0
+g_currentTime = 0.0
 
-// Biến trạng thái mô phỏng
-double g_tcp_cwnd_mb = 5.0;
-double g_tcp_throughput = 100.0;
-double g_udp_throughput = 980.0;
-double g_bbr_throughput = 990.0;
-double g_tcp_eff = 10.0;
-double g_udp_eff = 98.0;
-double g_bbr_eff = 99.0;
-double g_currentTime = 0.0;
+# Lưu trữ dữ liệu để vẽ biểu đồ realtime
+time_data = []
+tcp_tp_data = []
+udp_tp_data = []
+bbr_tp_data = []
+tcp_eff_data = []
+udp_eff_data = []
+bbr_eff_data = []
+tcp_cwnd_data = []
+loss_status_data = []
 
-std::ofstream g_csvFile;
-std::ofstream g_datFile;
-Ptr<UniformRandomVariable> g_uv;
-FILE *g_gnuplotPipe = NULL;
+def main():
+    global g_tcp_cwnd_mb, g_tcp_throughput, g_udp_throughput, g_bbr_throughput
+    global g_tcp_eff, g_udp_eff, g_bbr_eff, g_currentTime
 
-void SimulateStepCase2() {
-    g_currentTime += 1.0;
+    # Mở file CSV để ghi kết quả
+    csv_filename = "case_study2.csv"
+    csv_file = open(csv_filename, mode='w', newline='', encoding='utf-8')
+    csv_writer = csv.writer(csv_file)
+    csv_writer.writerow([
+        "Thoi gian", "RTT (ms)", "Bandwidth (Mbps)", "Mat goi",
+        "TCP Reno Throughput (Mbps)", "UDP UDT Throughput (Mbps)",
+        "TCP BBR Throughput (Mbps)", "TCP cwnd (MB)"
+    ])
 
-    // 1. Kiểm tra rớt gói ngẫu nhiên do nhiễu sóng vệ tinh (2%)
-    bool packet_lost = (g_uv->GetValue(0.0, 1.0) < PACKET_LOSS);
+    # Cấu hình giao diện Matplotlib (Multiplot 2x2)
+    plt.ion()
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 7))
+    fig.canvas.manager.set_window_title('Case 2 LFN Realtime Multiplot (0 -> 100s)')
+    fig.suptitle('CASE STUDY 2 - LONG FAT NETWORK (1 Gbps - 600ms RTT - Loss 2%)', fontsize=11)
 
-    // 2. Mô phỏng TCP Reno (Sawtooth: tăng tuyến tính, giảm một nửa khi mất gói)
-    if (packet_lost) {
-        g_tcp_cwnd_mb = g_tcp_cwnd_mb / 2.0;
-        if (g_tcp_cwnd_mb < 2.0) g_tcp_cwnd_mb = 2.0;
-    } else {
-        g_tcp_cwnd_mb += 4.0;
-        if (g_tcp_cwnd_mb > BDP_MB) g_tcp_cwnd_mb = BDP_MB;
-    }
-    g_tcp_throughput = (g_tcp_cwnd_mb * 8.0) / RTT_SECONDS;
-    if (g_tcp_throughput > BANDWIDTH_MBPS) g_tcp_throughput = BANDWIDTH_MBPS;
+    while g_currentTime < 100.0:
+        g_currentTime += 1.0
 
-    // 3. UDP và TCP BBR
-    g_udp_throughput = BANDWIDTH_MBPS * (1.0 - (packet_lost ? PACKET_LOSS : 0.005));
-    g_bbr_throughput = BANDWIDTH_MBPS * (packet_lost ? 0.98 : 0.99);
+        # 1. Kiểm tra rớt gói ngẫu nhiên do nhiễu sóng vệ tinh (2%)
+        packet_lost = (random.uniform(0.0, 1.0) < PACKET_LOSS)
 
-    // Tính % hiệu suất
-    g_tcp_eff = (g_tcp_throughput / BANDWIDTH_MBPS) * 100.0;
-    g_udp_eff = (g_udp_throughput / BANDWIDTH_MBPS) * 100.0;
-    g_bbr_eff = (g_bbr_throughput / BANDWIDTH_MBPS) * 100.0;
-
-    // Ghi file DAT cho Gnuplot (Cấu trúc cột: Time, TCP_TP, UDP_TP, BBR_TP, TCP_Eff, UDP_Eff, BBR_Eff, TCP_Cwnd, Loss_Status)
-    g_datFile << std::fixed << std::setprecision(1) << g_currentTime << " "
-              << g_tcp_throughput << " " << g_udp_throughput << " " << g_bbr_throughput << " "
-              << g_tcp_eff << " " << g_udp_eff << " " << g_bbr_eff << " "
-              << g_tcp_cwnd_mb << " " << (packet_lost ? 1 : 0) << std::endl;
-    g_datFile.flush();
-
-    // Ghi file CSV xuất sang LibreOffice Calc
-    g_csvFile << std::fixed << std::setprecision(1) << g_currentTime << ","
-              << RTT_MS << "," << BANDWIDTH_MBPS << ","
-              << (packet_lost ? "Co" : "Khong") << ","
-              << std::setprecision(2) << g_tcp_throughput << "," 
-              << g_udp_throughput << "," << g_bbr_throughput << ","
-              << g_tcp_cwnd_mb << std::endl;
-    g_csvFile.flush();
-
-    // In Terminal theo dõi
-    std::cout << "-> Time: " << std::setprecision(0) << g_currentTime 
-              << "s | TCP Reno: " << std::setprecision(1) << g_tcp_throughput << " Mbps"
-              << " | UDP/UDT: " << g_udp_throughput << " Mbps"
-              << " | TCP BBR: " << g_bbr_throughput << " Mbps" << std::endl;
-
-    // Gửi lệnh vẽ giao diện 4 ô (Multiplot 2x2) sang Gnuplot
-    if (g_gnuplotPipe) {
-        double maxX = (g_currentTime < 5.0) ? 5.0 : g_currentTime;
+        # 2. Mô phỏng TCP Reno (Sawtooth)
+        if packet_lost:
+            g_tcp_cwnd_mb = g_tcp_cwnd_mb / 2.0
+            if g_tcp_cwnd_mb < 2.0:
+                g_tcp_cwnd_mb = 2.0
+            tcp_behavior = "Giảm một nửa do mất gói"
+        else:
+            g_tcp_cwnd_mb += 4.0
+            if g_tcp_cwnd_mb > BDP_MB:
+                g_tcp_cwnd_mb = BDP_MB
+            tcp_behavior = "Tăng cwnd dần"
         
-        fprintf(g_gnuplotPipe, "set multiplot layout 2,2 title 'CASE STUDY 2 - LONG FAT NETWORK (1 Gbps - 600ms RTT - Loss 2%%)' font ',11'\n");
-        
-        // Ô 1: So sánh thông lượng
-        fprintf(g_gnuplotPipe, "set size 0.5, 0.5; set origin 0.0, 0.5;\n");
-        fprintf(g_gnuplotPipe, "set title 'So sánh thông lượng' font ',9'; set xlabel 'Thời gian (s)'; set ylabel 'Throughput (Mbps)'; set xrange [0:%.1f]; set yrange [0:1100]; set grid\n", maxX);
-        fprintf(g_gnuplotPipe, "plot 'realtime_case2.dat' u 1:2 w l lw 1.5 lc rgb '#1f77b4' t 'TCP Reno', "
-                               "'realtime_case2.dat' u 1:3 w l lw 1.5 lc rgb '#2ca02c' t 'UDP/UDT-like', "
-                               "'realtime_case2.dat' u 1:4 w l lw 1.5 lc rgb '#ff7f0e' t 'TCP BBR-like', "
-                               "1000 w l dt 2 lc rgb 'gray' t 'Bandwidth max'\n");
+        g_tcp_throughput = (g_tcp_cwnd_mb * 8.0) / RTT_SECONDS
+        if g_tcp_throughput > BANDWIDTH_MBPS:
+            g_tcp_throughput = BANDWIDTH_MBPS
 
-        // Ô 2: Hiệu suất sử dụng đường truyền
-        fprintf(g_gnuplotPipe, "set size 0.5, 0.5; set origin 0.5, 0.5;\n");
-        fprintf(g_gnuplotPipe, "set title 'Hiệu suất sử dụng đường truyền 1 Gbps' font ',9'; set xlabel 'Thời gian (s)'; set ylabel 'Hiệu suất (%%)'; set xrange [0:%.1f]; set yrange [0:110]; set grid\n", maxX);
-        fprintf(g_gnuplotPipe, "plot 'realtime_case2.dat' u 1:5 w l lw 1.5 lc rgb '#1f77b4' t 'TCP Reno', "
-                               "'realtime_case2.dat' u 1:6 w l lw 1.5 lc rgb '#2ca02c' t 'UDP/UDT-like', "
-                               "'realtime_case2.dat' u 1:7 w l lw 1.5 lc rgb '#ff7f0e' t 'TCP BBR-like', "
-                               "100 w l dt 2 lc rgb 'gray' t '100%%'\n");
+        # 3. UDP và TCP BBR
+        g_udp_throughput = BANDWIDTH_MBPS * (1.0 - (PACKET_LOSS if packet_lost else 0.005))
+        g_bbr_throughput = BANDWIDTH_MBPS * (0.98 if packet_lost else 0.99)
 
-        // Ô 3: TCP Reno - Cửa sổ truyền và BDP
-        fprintf(g_gnuplotPipe, "set size 0.5, 0.5; set origin 0.0, 0.0;\n");
-        fprintf(g_gnuplotPipe, "set title 'TCP Reno - Cửa sổ truyền và BDP' font ',9'; set xlabel 'Thời gian (s)'; set ylabel 'Cửa sổ truyền (MB)'; set xrange [0:%.1f]; set yrange [0:85]; set grid\n", maxX);
-        fprintf(g_gnuplotPipe, "plot 'realtime_case2.dat' u 1:8 w l lw 1.5 lc rgb '#1f77b4' t 'TCP Reno cwnd', "
-                               "%.2f w l dt 2 lc rgb 'gray' t 'BDP = 75MB'\n", BDP_MB);
+        # Tính % hiệu suất
+        g_tcp_eff = (g_tcp_throughput / BANDWIDTH_MBPS) * 100.0
+        g_udp_eff = (g_udp_throughput / BANDWIDTH_MBPS) * 100.0
+        g_bbr_eff = (g_bbr_throughput / BANDWIDTH_MBPS) * 100.0
 
-        // Ô 4: Nhiễu / mất gói 2%
-        fprintf(g_gnuplotPipe, "set size 0.5, 0.5; set origin 0.5, 0.0;\n");
-        fprintf(g_gnuplotPipe, "set title 'Nhiễu / mất gói 2%%' font ',9'; set xlabel 'Thời gian (s)'; set ylabel 'Trạng thái'; set xrange [0:%.1f]; set yrange [-0.2:1.2]; set ytics ('Không' 0, 'Có' 1); set grid\n", maxX);
-        fprintf(g_gnuplotPipe, "plot 'realtime_case2.dat' u 1:9 w lp pt 7 ps 0.8 lc rgb '#1f77b4' t 'Sự kiện mất gói'\n");
+        # Lưu dữ liệu vào danh sách
+        time_data.append(g_currentTime)
+        tcp_tp_data.append(g_tcp_throughput)
+        udp_tp_data.append(g_udp_throughput)
+        bbr_tp_data.append(g_bbr_throughput)
+        tcp_eff_data.append(g_tcp_eff)
+        udp_eff_data.append(g_udp_eff)
+        bbr_eff_data.append(g_bbr_eff)
+        tcp_cwnd_data.append(g_tcp_cwnd_mb)
+        loss_status_data.append(1 if packet_lost else 0)
 
-        fprintf(g_gnuplotPipe, "unset multiplot\n");
-        fflush(g_gnuplotPipe);
-    }
+        # Ghi file CSV
+        csv_writer.writerow([
+            f"{g_currentTime:.1f}", RTT_MS, BANDWIDTH_MBPS,
+            ("Co" if packet_lost else "Khong"),
+            f"{g_tcp_throughput:.2f}", f"{g_udp_throughput:.2f}",
+            f"{g_bbr_throughput:.2f}", f"{g_tcp_cwnd_mb:.2f}"
+        ])
+        csv_file.flush()
 
-    usleep(250000); // Tốc độ chạy mượt mà từng giây
+        # In Terminal theo định dạng gọn gàng
+        print("==========================================================")
+        print(f"THỜI GIAN: {g_currentTime:.1f} giây")
+        print("==========================================================")
+        print("THÔNG SỐ ĐƯỜNG TRUYỀN")
+        print(f"  Dung lượng file     : {FILE_SIZE_GB:.0f} GB")
+        print(f"  Bandwidth tối đa    : {BANDWIDTH_MBPS:.0f} Mbps (1 Gbps)")
+        print(f"  RTT                 : {RTT_MS:.0f} ms")
+        print(f"  BDP                 : {BDP_MB:.2f} MB")
+        print(f"  Nhiễu / mất gói     : {'CÓ' if packet_lost else 'KHÔNG'}")
+        print("----------------------------------------------------------")
+        print("TCP RENO")
+        print(f"  cwnd                : {g_tcp_cwnd_mb:.2f} MB")
+        print(f"  Thông lượng         : {g_tcp_throughput:.2f} Mbps")
+        print(f"  Hiệu suất           : {g_tcp_eff:.2f}%")
+        print(f"  Phản ứng            : {tcp_behavior}")
+        print("----------------------------------------------------------")
+        print("UDP / UDT-LIKE")
+        print(f"  Thông lượng         : {g_udp_throughput:.2f} Mbps")
+        print(f"  Hiệu suất           : {g_udp_eff:.2f}%")
+        print(f"  Phản ứng            : Duy trì tốc độ truyền cao")
+        print("----------------------------------------------------------")
+        print("TCP BBR-LIKE")
+        print(f"  Thông lượng         : {g_bbr_throughput:.2f} Mbps")
+        print(f"  Hiệu suất           : {g_bbr_eff:.2f}%")
+        print(f"  Phản ứng            : Duy trì theo bandwidth/RTT")
+        print("----------------------------------------------------------")
+        print(f"Đã lưu Excel          : {csv_filename}")
+        print("==========================================================")
+        print("\n")
 
-    if (g_currentTime < 100.0) {
-        Simulator::Schedule(Seconds(1.0), &SimulateStepCase2);
-    }
-}
+        # Cập nhật biểu đồ Realtime
+        max_x = 5.0 if g_currentTime < 5.0 else g_currentTime
 
-int main(int argc, char *argv[]) {
-    CommandLine cmd(__FILE__);
-    cmd.Parse(argc, argv);
+        # Ô 1: So sánh thông lượng
+        ax1.clear()
+        ax1.plot(time_data, tcp_tp_data, label='TCP Reno', color='#1f77b4', linewidth=1.5)
+        ax1.plot(time_data, udp_tp_data, label='UDP/UDT-like', color='#2ca02c', linewidth=1.5)
+        ax1.plot(time_data, bbr_tp_data, label='TCP BBR-like', color='#ff7f0e', linewidth=1.5)
+        ax1.axhline(y=1000, color='gray', linestyle='--', label='Bandwidth max')
+        ax1.set_title('So sánh thông lượng', fontsize=9)
+        ax1.set_xlabel('Thời gian (s)')
+        ax1.set_ylabel('Throughput (Mbps)')
+        ax1.set_xlim(0, max_x)
+        ax1.set_ylim(0, 1100)
+        ax1.grid(True)
+        ax1.legend(loc='lower left', fontsize=8)
 
-    g_uv = CreateObject<UniformRandomVariable>();
+        # Ô 2: Hiệu suất sử dụng đường truyền
+        ax2.clear()
+        ax2.plot(time_data, tcp_eff_data, label='TCP Reno', color='#1f77b4', linewidth=1.5)
+        ax2.plot(time_data, udp_eff_data, label='UDP/UDT-like', color='#2ca02c', linewidth=1.5)
+        ax2.plot(time_data, bbr_eff_data, label='TCP BBR-like', color='#ff7f0e', linewidth=1.5)
+        ax2.axhline(y=100, color='gray', linestyle='--', label='100%')
+        ax2.set_title('Hiệu suất sử dụng đường truyền 1 Gbps', fontsize=9)
+        ax2.set_xlabel('Thời gian (s)')
+        ax2.set_ylabel('Hiệu suất (%)')
+        ax2.set_xlim(0, max_x)
+        ax2.set_ylim(0, 110)
+        ax2.grid(True)
 
-    g_datFile.open("realtime_case2.dat", std::ios::out | std::ios::trunc);
-    g_csvFile.open("ket_qua_Case2_LFN.csv", std::ios::out | std::ios::trunc);
-    g_csvFile << "Thoi gian,RTT (ms),Bandwidth (Mbps),Mat goi,TCP Reno Throughput (Mbps),UDP UDT Throughput (Mbps),TCP BBR Throughput (Mbps),TCP cwnd (MB)\n";
+        # Ô 3: TCP Reno - Cửa sổ truyền và BDP
+        ax3.clear()
+        ax3.plot(time_data, tcp_cwnd_data, label='TCP Reno cwnd', color='#1f77b4', linewidth=1.5)
+        ax3.axhline(y=BDP_MB, color='gray', linestyle='--', label=f'BDP = {BDP_MB:.1f}MB')
+        ax3.set_title('TCP Reno - Cửa sổ truyền và BDP', fontsize=9)
+        ax3.set_xlabel('Thời gian (s)')
+        ax3.set_ylabel('Cửa sổ truyền (MB)')
+        ax3.set_xlim(0, max_x)
+        ax3.set_ylim(0, 85)
+        ax3.grid(True)
+        ax3.legend(loc='lower left', fontsize=8)
 
-    g_gnuplotPipe = popen("gnuplot -persistent", "w");
-    if (g_gnuplotPipe) {
-        fprintf(g_gnuplotPipe, "set terminal qt size 1100,700 title 'Case 2 LFN Realtime Multiplot (0 -> 100s)'\n");
-    }
+        # Ô 4: Nhiễu / mất gói 2%
+        ax4.clear()
+        ax4.plot(time_data, loss_status_data, marker='o', markersize=3, linestyle='-', color='#1f77b4', label='Sự kiện mất gói')
+        ax4.set_title('Nhiễu / mất gói 2%', fontsize=9)
+        ax4.set_xlabel('Thời gian (s)')
+        ax4.set_ylabel('Trạng thái')
+        ax4.set_xlim(0, max_x)
+        ax4.set_ylim(-0.2, 1.2)
+        ax4.set_yticks([0, 1])
+        ax4.set_yticklabels(['Không', 'Có'])
+        ax4.grid(True)
 
-    std::cout << "==========================================================" << std::endl;
-    std::cout << "  BAT DAU MO PHONG CASE STUDY 2: LFN (0s -> 100s)" << std::endl;
-    std::cout << "==========================================================" << std::endl;
+        plt.tight_layout()
+        plt.draw()
+        plt.pause(0.001)
 
-    Simulator::Schedule(Seconds(1.0), &SimulateStepCase2);
-    Simulator::Run();
-    Simulator::Destroy();
+        # Độ trễ 1.0 giây để chạy chậm rãi
+        time.sleep(0.5)
 
-    g_csvFile.close();
-    g_datFile.close();
+    csv_file.close()
+    print("\nMo phong Case 2 hoan tat! Dang mo file Excel ket qua...")
+    
+    # Tự động mở file kết quả bằng phần mềm bảng tính (LibreOffice Calc trên Ubuntu)
+    if os.name == 'posix':
+        os.system("localc case_study2.csv &")
+    elif os.name == 'nt':
+        os.system("start case_study2.csv")
 
-    if (g_gnuplotPipe) {
-        pclose(g_gnuplotPipe);
-    }
+    plt.ioff()
+    plt.show()
 
-    std::cout << "\nMo phong Case 2 hoan tat! Dang mo file Excel ket qua..." << std::endl;
-    int unused_res = std::system("localc ket_qua_Case2_LFN.csv &");
-    (void)unused_res;
-
-    return 0;
-}
+if __name__ == "__main__":
+    main()

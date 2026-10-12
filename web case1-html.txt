@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Báo Cáo Chi Tiết Case Study 1: Video Streaming (UDP vs TCP)</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f7f6; color: #333; padding: 20px; }
+        .container { max-width: 1200px; margin: auto; background: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        h1 { text-align: center; color: #1a365d; }
+        .subtitle { text-align: center; color: #718096; margin-bottom: 25px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 15px; margin-bottom: 30px; }
+        .card { background: #ebf8ff; border-left: 5px solid #3182ce; padding: 15px; border-radius: 8px; }
+        .card.danger { background: #fff5f5; border-left-color: #e53e3e; }
+        .card.success { background: #f0fff4; border-left-color: #38a169; }
+        .card.warning { background: #fffaf0; border-left-color: #dd6b20; }
+        .card-title { font-size: 13px; color: #4a5568; font-weight: bold; }
+        .card-value { font-size: 18px; font-weight: bold; margin-top: 5px; color: #2d3748; }
+        
+        .charts-container { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .chart-box { background: #fff; padding: 20px; border: 1px solid #e2e8f0; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.03); }
+        .full-width { grid-column: 1 / -1; }
+        .chart-box h3 { margin-top: 0; color: #2c5282; text-align: center; font-size: 15px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>CASE STUDY 1: BÁO CÁO MÔ PHỎNG TRUYỀN PHÁT VIDEO</h1>
+    <p class="subtitle">Phân tích tác động rớt gói 2% đối với Video Conference (UDP) và Netflix VoD (TCP)</p>
+
+    <!-- Thẻ thống kê tổng quan -->
+    <div class="stats-grid">
+        <div class="card warning">
+            <div class="card-title">Tỷ lệ Rớt Gói (UDP - Zoom)</div>
+            <div class="card-value" id="udpLossVal">Đang tải...</div>
+        </div>
+        <div class="card success">
+            <div class="card-title">Chất lượng Hình ảnh Zoom</div>
+            <div class="card-value">Chấp nhận mất khung hình lẻ</div>
+        </div>
+        <div class="card danger">
+            <div class="card-title">TCP Retransmissions (Netflix)</div>
+            <div class="card-value" id="tcpRetransVal">Đang tải...</div>
+        </div>
+        <div class="card success">
+            <div class="card-title">Độ Nét & Toàn Vẹn Netflix</div>
+            <div class="card-value">100% (Không vỡ nét / Buffer)</div>
+        </div>
+    </div>
+
+    <!-- 4 Biểu đồ chuyên sâu -->
+    <div class="charts-container">
+        <div class="chart-box">
+            <h3>1. Tỷ Lệ Rớt Gói Theo Thời Gian (%)</h3>
+            <canvas id="lossRateChart"></canvas>
+        </div>
+        <div class="chart-box">
+            <h3>2. Thông Lượng Truyền Tải - Đảm Bảo Độ Nét (Mbps)</h3>
+            <canvas id="throughputChart"></canvas>
+        </div>
+        <div class="chart-box">
+            <h3>3. Độ Trễ Kết Nối (Latency - ms)</h3>
+            <canvas id="latencyChart"></canvas>
+        </div>
+        <div class="chart-box">
+            <h3>4. Độ Biến Động Jitter (ms)</h3>
+            <canvas id="jitterChart"></canvas>
+        </div>
+    </div>
+</div>
+
+<script>
+    async function loadData() {
+        const response = await fetch('../results/case1.csv');
+        const text = await response.text();
+        const lines = text.trim().split('\n').slice(1);
+        
+        const labels = [];
+        const udpLat = [], tcpLat = [];
+        const udpTp = [], tcpTp = [];
+        const udpLoss = [], tcpJitter = [], udpJitter = [];
+        let lastUdpLoss = "2.0%";
+        let lastTcpRetrans = "0";
+
+        lines.forEach(line => {
+            const cols = line.split(',');
+            if (cols.length >= 10) {
+                const time = cols[0] + 's';
+                if (!labels.includes(time)) labels.push(time);
+                
+                lastUdpLoss = cols[8] + "%";
+                lastTcpRetrans = cols[9];
+
+                if (cols[1].includes('UDP')) {
+                    udpLat.push(parseFloat(cols[5]));
+                    udpJitter.push(parseFloat(cols[6]));
+                    udpTp.push(parseFloat(cols[7]));
+                    udpLoss.push(parseFloat(cols[8]));
+                } else {
+                    tcpLat.push(parseFloat(cols[5]));
+                    tcpJitter.push(parseFloat(cols[6]));
+                    tcpTp.push(parseFloat(cols[7]));
+                }
+            }
+        });
+
+        // Gắn số liệu vào thẻ Card
+        document.getElementById('udpLossVal').innerText = lastUdpLoss + " (Tránh đứng hình)";
+        document.getElementById('tcpRetransVal').innerText = lastTcpRetrans + " lần khôi phục gói";
+
+        // 1. Biểu đồ Rớt Gói (Loss Rate)
+        new Chart(document.getElementById('lossRateChart'), {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{ label: 'UDP Loss Rate (%)', data: udpLoss, borderColor: '#dd6b20', backgroundColor: 'rgba(221, 107, 32, 0.1)', fill: true, borderWidth: 2, pointRadius: 0 }]
+            },
+            options: { responsive: true, scales: { y: { min: 0, max: 5 } } }
+        });
+
+        // 2. Biểu đồ Throughput (Độ nét / Tải dữ liệu)
+        new Chart(document.getElementById('throughputChart'), {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    { label: 'UDP Throughput (Zoom)', data: udpTp, borderColor: '#38a169', borderWidth: 2, fill: false, pointRadius: 0 },
+                    { label: 'TCP Throughput (Netflix - 100% nét)', data: tcpTp, borderColor: '#3182ce', backgroundColor: 'rgba(49, 130, 206, 0.1)', fill: true, borderWidth: 2, pointRadius: 0 }
+                ]
+            },
+            options: { responsive: true, scales: { y: { min: 0 } } }
+        });
+
+        // 3. Biểu đồ Latency
+        new Chart(document.getElementById('latencyChart'), {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    { label: 'UDP Latency (<150ms)', data: udpLat, borderColor: '#38a169', borderWidth: 2, fill: false, pointRadius: 0 },
+                    { label: 'TCP Latency (Spike do HoL Blocking)', data: tcpLat, borderColor: '#e53e3e', borderWidth: 2, fill: false, pointRadius: 1 }
+                ]
+            },
+            options: { responsive: true, scales: { y: { min: 0 } } }
+        });
+
+        // 4. Biểu đồ Jitter
+        new Chart(document.getElementById('jitterChart'), {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    { label: 'UDP Jitter', data: udpJitter, borderColor: '#3182ce', borderWidth: 2, fill: false, pointRadius: 0 },
+                    { label: 'TCP Jitter', data: tcpJitter, borderColor: '#805ad5', borderWidth: 2, fill: false, pointRadius: 0 }
+                ]
+            },
+            options: { responsive: true, scales: { y: { min: 0 } } }
+        });
+    }
+    loadData();
+</script>
+
+</body>
+</html>

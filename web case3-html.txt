@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Báo Cáo Chuyên Sâu Case Study 3: HTTP/2 (TCP) và HTTP/3 (QUIC)</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f7f6; color: #333; padding: 20px; }
+        .container { max-width: 1200px; margin: auto; background: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        h1 { text-align: center; color: #1a365d; font-size: 22px; }
+        .subtitle { text-align: center; color: #718096; margin-bottom: 25px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 15px; margin-bottom: 30px; }
+        .card { background: #ebf8ff; border-left: 5px solid #3182ce; padding: 15px; border-radius: 8px; }
+        .card.danger { background: #fff5f5; border-left-color: #e53e3e; }
+        .card.success { background: #f0fff4; border-left-color: #38a169; }
+        .card.warning { background: #fffaf0; border-left-color: #dd6b20; }
+        .card-title { font-size: 13px; color: #4a5568; font-weight: bold; }
+        .card-value { font-size: 14px; font-weight: bold; margin-top: 5px; color: #2d3748; line-height: 1.4; }
+        
+        .charts-container { display: grid; grid-template-columns: 1fr; gap: 20px; }
+        .chart-box { background: #fff; padding: 20px; border: 1px solid #e2e8f0; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.03); }
+        .chart-box h3 { margin-top: 0; color: #2c5282; text-align: center; font-size: 15px; }
+        
+        .analysis-box { margin-top: 30px; background: #f7fafc; padding: 20px; border-radius: 8px; border: 1px solid #e2e8f0; }
+        .analysis-box h3 { color: #1a365d; margin-top: 0; }
+        .analysis-box ul { padding-left: 20px; line-height: 1.6; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>CASE STUDY 3: SO SÁNH HIỆU NĂNG HTTP/2 (TCP) VÀ HTTP/3 (QUIC)</h1>
+    <p class="subtitle">Đánh giá tác động của hiện tượng Head-of-Line (HoL) Blocking khi mạng có tỷ lệ mất gói 2%</p>
+
+    <!-- Thẻ thống kê thông số Case Study 3 -->
+    <div class="stats-grid">
+        <div class="card warning">
+            <div class="card-title">Điều kiện Mạng Mô phỏng</div>
+            <div class="card-value">Tỷ lệ rớt gói 2% | Môi trường mạng biến động</div>
+        </div>
+        <div class="card danger">
+            <div class="card-title">HTTP/2 trên TCP</div>
+            <div class="card-value">Bị HoL Blocking &rarr; Mất 1 gói làm nghẽn toàn bộ các stream chia sẻ kết nối</div>
+        </div>
+        <div class="card success">
+            <div class="card-title">HTTP/3 trên QUIC (UDP)</div>
+            <div class="card-value">Đa luồng độc lập &rarr; Mất gói ở stream này không ảnh hưởng stream khác</div>
+        </div>
+        <div class="card success">
+            <div class="card-title">Độ Trễ & Ổn Định</div>
+            <div class="card-value">QUIC triệt tiêu hoàn toàn các đỉnh spike độ trễ do nghẽn cục bộ</div>
+        </div>
+    </div>
+
+    <!-- Hệ thống Biểu đồ phân tích chuyên sâu -->
+    <div class="charts-container">
+        <div class="chart-box">
+            <h3>1. So Sánh Tốc Độ Truyền Tải (Goodput - Mbps)</h3>
+            <canvas id="goodputChart"></canvas>
+        </div>
+        <div class="chart-box">
+            <h3>2. So Sánh Độ Trễ và Spike do HoL Blocking (Latency - ms)</h3>
+            <canvas id="latencyChart"></canvas>
+        </div>
+    </div>
+
+    <!-- Khung nhận xét chuyên môn phục vụ báo cáo -->
+    <div class="analysis-box">
+        <h3>Nhận Xét Kết Quả & Phân Tích Chuyên Sâu:</h3>
+        <ul>
+            <li><strong>Hiện tượng Head-of-Line (HoL) Blocking ở TCP (HTTP/2):</strong> Do HTTP/2 sử dụng chung một kết nối TCP duy nhất cho nhiều luồng dữ liệu, khi xảy ra mất gói (2%), toàn bộ kết nối bị đình trệ để chờ truyền lại. Điều này dẫn đến thông lượng sụt giảm và phát sinh các đỉnh spike độ trễ cực lớn lên tới ~260ms.</li>
+            <li><strong>Ưu thế vượt trội của QUIC (HTTP/3):</strong> Xây dựng trên nền tảng UDP với cơ chế quản lý gói tin độc lập cho từng stream. Gói tin bị mất ở một stream không làm ảnh hưởng đến các stream khác, giúp duy trì thông lượng ổn định ở mức cao (~95 Mbps) và giữ độ trễ phẳng tuyệt đối (~40ms).</li>
+        </ul>
+    </div>
+</div>
+
+<script>
+    async function loadData() {
+        try {
+            let response = await fetch('../results/case3.csv');
+            if (!response.ok) response = await fetch('/results/case3.csv');
+            if (!response.ok) response = await fetch('results/case3.csv');
+            
+            const text = await response.text();
+            const lines = text.trim().split('\n').slice(1);
+            
+            const labels = [];
+            const h2Gp = [], h3Gp = [];
+            const h2Lat = [], h3Lat = [];
+
+            lines.forEach(line => {
+                const cols = line.split(',');
+                if (cols.length >= 5) {
+                    const time = cols[0].trim() + 's';
+                    labels.push(time);
+                    
+                    h2Gp.push(parseFloat(cols[1]) || 0);
+                    h2Lat.push(parseFloat(cols[2]) || 0);
+                    h3Gp.push(parseFloat(cols[3]) || 0);
+                    h3Lat.push(parseFloat(cols[4]) || 0);
+                }
+            });
+
+            // 1. Goodput Chart
+            new Chart(document.getElementById('goodputChart'), {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: 'HTTP/2 (TCP) Goodput (Mbps)', data: h2Gp, borderColor: '#e53e3e', borderWidth: 2, fill: false, pointRadius: 3 },
+                        { label: 'HTTP/3 (QUIC) Goodput (Mbps)', data: h3Gp, borderColor: '#38a169', backgroundColor: 'rgba(56, 161, 105, 0.1)', fill: true, borderWidth: 2, pointRadius: 3 }
+                    ]
+                },
+                options: { responsive: true, scales: { y: { min: 0, max: 110 } } }
+            });
+
+            // 2. Latency Spike Chart
+            new Chart(document.getElementById('latencyChart'), {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: 'HTTP/2 Latency Spike (HoL Blocking - ms)', data: h2Lat, borderColor: '#e53e3e', backgroundColor: 'rgba(229, 62, 62, 0.1)', fill: true, borderWidth: 2, pointRadius: 4 },
+                        { label: 'HTTP/3 Latency (Stable - ms)', data: h3Lat, borderColor: '#3182ce', borderWidth: 2, fill: false, pointRadius: 3 }
+                    ]
+                },
+                options: { responsive: true, scales: { y: { min: 0 } } }
+            });
+
+        } catch (error) {
+            console.error('Lỗi khi tải biểu đồ Case 3:', error);
+        }
+    }
+
+    loadData();
+</script>
+
+</body>
+</html>

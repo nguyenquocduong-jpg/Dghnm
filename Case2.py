@@ -1,214 +1,173 @@
-import csv
-import os
-import random
-import time
-import matplotlib.pyplot as plt
+#include "ns3/core-module.h"
+#include "ns3/network-module.h"
+#include "ns3/internet-module.h"
+#include "ns3/point-to-point-module.h"
+#include "ns3/applications-module.h"
+#include "ns3/flow-monitor-module.h"
+#include "ns3/error-model.h"
+#include "ns3/tcp-socket.h"
+#include "ns3/string.h"
+#include "ns3/pointer.h"
 
-# ==========================================
-# Thông số Case Study 2: Long Fat Network (LFN)
-# ==========================================
-BANDWIDTH_MBPS = 1000.0  # Băng thông 1 Gbps
-RTT_MS = 600.0           # RTT vệ tinh = 600 ms
-RTT_SECONDS = RTT_MS / 1000.0
-PACKET_LOSS = 0.02       # Nhiễu sóng mất gói 2%
-BDP_MB = (BANDWIDTH_MBPS * RTT_SECONDS) / 8.0  # BDP = 75 MB
-FILE_SIZE_GB = 50.0      # Dung lượng file giả định
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <sys/stat.h>
 
-# Biến trạng thái mô phỏng
-g_tcp_cwnd_mb = 5.0
-g_tcp_throughput = 100.0
-g_udp_throughput = 980.0
-g_bbr_throughput = 990.0
-g_tcp_eff = 10.0
-g_udp_eff = 98.0
-g_bbr_eff = 99.0
-g_currentTime = 0.0
+using namespace ns3;
 
-# Lưu trữ dữ liệu để vẽ biểu đồ realtime
-time_data = []
-tcp_tp_data = []
-udp_tp_data = []
-bbr_tp_data = []
-tcp_eff_data = []
-udp_eff_data = []
-bbr_eff_data = []
-tcp_cwnd_data = []
-loss_status_data = []
+NS_LOG_COMPONENT_DEFINE("CaseStudy2Clean");
 
-def main():
-    global g_tcp_cwnd_mb, g_tcp_throughput, g_udp_throughput, g_bbr_throughput
-    global g_tcp_eff, g_udp_eff, g_bbr_eff, g_currentTime
+static std::ofstream csv;
+static Ptr<FlowMonitor> flowMonitor;
+static FlowMonitorHelper flowHelper;
+static Ptr<Ipv4FlowClassifier> classifier;
 
-    # Mở file CSV để ghi kết quả
-    csv_filename = "case_study2.csv"
-    csv_file = open(csv_filename, mode='w', newline='', encoding='utf-8')
-    csv_writer = csv.writer(csv_file)
-    csv_writer.writerow([
-        "Thoi gian", "RTT (ms)", "Bandwidth (Mbps)", "Mat goi",
-        "TCP Reno Throughput (Mbps)", "UDP UDT Throughput (Mbps)",
-        "TCP BBR Throughput (Mbps)", "TCP cwnd (MB)"
-    ])
+static const double SIM_END = 70.0;
+static const double SAMPLE_STEP = 0.5;
+static const double LINK_MBPS = 1000.0;
 
-    # Cấu hình giao diện Matplotlib (Multiplot 2x2)
-    plt.ion()
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(12, 7))
-    fig.canvas.manager.set_window_title('Case 2 LFN Realtime Multiplot (0 -> 100s)')
-    fig.suptitle('CASE STUDY 2 - LONG FAT NETWORK (1 Gbps - 600ms RTT - Loss 2%)', fontsize=11)
+static std::map<FlowId, uint64_t> lastRxBytes;
+static double totalTcpBytes = 0;
+static double totalUdpBytes = 0;
 
-    while g_currentTime < 100.0:
-        g_currentTime += 1.0
+void SavePerformanceMetrics()
+{
+    double now = Simulator::Now().GetSeconds();
+    double tcpMbps = 0, udpMbps = 0;
+    double tcpLatency = 0, udpLatency = 0;
 
-        # 1. Kiểm tra rớt gói ngẫu nhiên do nhiễu sóng vệ tinh (2%)
-        packet_lost = (random.uniform(0.0, 1.0) < PACKET_LOSS)
+    auto stats = flowMonitor->GetFlowStats();
+    for (const auto &item : stats)
+    {
+        FlowId id = item.first;
+        const auto &s = item.second;
+        auto tuple = classifier->FindFlow(id);
 
-        # 2. Mô phỏng TCP Reno (Sawtooth)
-        if packet_lost:
-            g_tcp_cwnd_mb = g_tcp_cwnd_mb / 2.0
-            if g_tcp_cwnd_mb < 2.0:
-                g_tcp_cwnd_mb = 2.0
-            tcp_behavior = "Giảm một nửa do mất gói"
-        else:
-            g_tcp_cwnd_mb += 4.0
-            if g_tcp_cwnd_mb > BDP_MB:
-                g_tcp_cwnd_mb = BDP_MB
-            tcp_behavior = "Tăng cwnd dần"
-        
-        g_tcp_throughput = (g_tcp_cwnd_mb * 8.0) / RTT_SECONDS
-        if g_tcp_throughput > BANDWIDTH_MBPS:
-            g_tcp_throughput = BANDWIDTH_MBPS
+        uint64_t currentRx = s.rxBytes;
+        uint64_t previousRx = lastRxBytes[id];
+        uint64_t deltaBytes = currentRx >= previousRx ? currentRx - previousRx : 0;
+        lastRxBytes[id] = currentRx;
 
-        # 3. UDP và TCP BBR
-        g_udp_throughput = BANDWIDTH_MBPS * (1.0 - (PACKET_LOSS if packet_lost else 0.005))
-        g_bbr_throughput = BANDWIDTH_MBPS * (0.98 if packet_lost else 0.99)
+        double throughput = deltaBytes * 8.0 / SAMPLE_STEP / 1000000.0;
+        double latency = (s.rxPackets > 0) ? s.delaySum.GetSeconds() * 1000.0 / s.rxPackets : 0.0;
 
-        # Tính % hiệu suất
-        g_tcp_eff = (g_tcp_throughput / BANDWIDTH_MBPS) * 100.0
-        g_udp_eff = (g_udp_throughput / BANDWIDTH_MBPS) * 100.0
-        g_bbr_eff = (g_bbr_throughput / BANDWIDTH_MBPS) * 100.0
+        // Port 9001: TCP NewReno | Port 9002: Reliable UDP/Alternative
+        if (tuple.destinationPort == 9001)
+        {
+            tcpMbps += throughput;
+            totalTcpBytes += deltaBytes;
+            tcpLatency = latency;
+        }
+        else if (tuple.destinationPort == 9002)
+        {
+            udpMbps += throughput;
+            totalUdpBytes += deltaBytes;
+            udpLatency = latency;
+        }
+    }
 
-        # Lưu dữ liệu vào danh sách
-        time_data.append(g_currentTime)
-        tcp_tp_data.append(g_tcp_throughput)
-        udp_tp_data.append(g_udp_throughput)
-        bbr_tp_data.append(g_bbr_throughput)
-        tcp_eff_data.append(g_tcp_eff)
-        udp_eff_data.append(g_udp_eff)
-        bbr_eff_data.append(g_bbr_eff)
-        tcp_cwnd_data.append(g_tcp_cwnd_mb)
-        loss_status_data.append(1 if packet_lost else 0)
+    double tcpUtil = tcpMbps / LINK_MBPS * 100.0;
+    double udpUtil = udpMbps / LINK_MBPS * 100.0;
 
-        # Ghi file CSV
-        csv_writer.writerow([
-            f"{g_currentTime:.1f}", RTT_MS, BANDWIDTH_MBPS,
-            ("Co" if packet_lost else "Khong"),
-            f"{g_tcp_throughput:.2f}", f"{g_udp_throughput:.2f}",
-            f"{g_bbr_throughput:.2f}", f"{g_tcp_cwnd_mb:.2f}"
-        ])
-        csv_file.flush()
+    // Ghi dữ liệu chuẩn vào file CSV cho trang web đọc
+    csv << std::fixed << std::setprecision(4)
+        << now << ",TCP_NewReno," << tcpMbps << "," << tcpUtil << "," << (tcpLatency > 0 ? tcpLatency : 600.0) << "," << totalTcpBytes << "\n"
+        << now << ",Reliable_UDP," << udpMbps << "," << udpUtil << "," << (udpLatency > 0 ? udpLatency : 600.0) << "," << totalUdpBytes << "\n";
 
-        # In Terminal theo định dạng gọn gàng
-        print("==========================================================")
-        print(f"THỜI GIAN: {g_currentTime:.1f} giây")
-        print("==========================================================")
-        print("THÔNG SỐ ĐƯỜNG TRUYỀN")
-        print(f"  Dung lượng file     : {FILE_SIZE_GB:.0f} GB")
-        print(f"  Bandwidth tối đa    : {BANDWIDTH_MBPS:.0f} Mbps (1 Gbps)")
-        print(f"  RTT                 : {RTT_MS:.0f} ms")
-        print(f"  BDP                 : {BDP_MB:.2f} MB")
-        print(f"  Nhiễu / mất gói     : {'CÓ' if packet_lost else 'KHÔNG'}")
-        print("----------------------------------------------------------")
-        print("TCP RENO")
-        print(f"  cwnd                : {g_tcp_cwnd_mb:.2f} MB")
-        print(f"  Thông lượng         : {g_tcp_throughput:.2f} Mbps")
-        print(f"  Hiệu suất           : {g_tcp_eff:.2f}%")
-        print(f"  Phản ứng            : {tcp_behavior}")
-        print("----------------------------------------------------------")
-        print("UDP / UDT-LIKE")
-        print(f"  Thông lượng         : {g_udp_throughput:.2f} Mbps")
-        print(f"  Hiệu suất           : {g_udp_eff:.2f}%")
-        print(f"  Phản ứng            : Duy trì tốc độ truyền cao")
-        print("----------------------------------------------------------")
-        print("TCP BBR-LIKE")
-        print(f"  Thông lượng         : {g_bbr_throughput:.2f} Mbps")
-        print(f"  Hiệu suất           : {g_bbr_eff:.2f}%")
-        print(f"  Phản ứng            : Duy trì theo bandwidth/RTT")
-        print("----------------------------------------------------------")
-        print(f"Đã lưu Excel          : {csv_filename}")
-        print("==========================================================")
-        print("\n")
+    if (now + SAMPLE_STEP <= SIM_END)
+    {
+        Simulator::Schedule(Seconds(SAMPLE_STEP), &SavePerformanceMetrics);
+    }
+}
 
-        # Cập nhật biểu đồ Realtime
-        max_x = 5.0 if g_currentTime < 5.0 else g_currentTime
+int main(int argc, char *argv[])
+{
+    Time::SetResolution(Time::NS);
 
-        # Ô 1: So sánh thông lượng
-        ax1.clear()
-        ax1.plot(time_data, tcp_tp_data, label='TCP Reno', color='#1f77b4', linewidth=1.5)
-        ax1.plot(time_data, udp_tp_data, label='UDP/UDT-like', color='#2ca02c', linewidth=1.5)
-        ax1.plot(time_data, bbr_tp_data, label='TCP BBR-like', color='#ff7f0e', linewidth=1.5)
-        ax1.axhline(y=1000, color='gray', linestyle='--', label='Bandwidth max')
-        ax1.set_title('So sánh thông lượng', fontsize=9)
-        ax1.set_xlabel('Thời gian (s)')
-        ax1.set_ylabel('Throughput (Mbps)')
-        ax1.set_xlim(0, max_x)
-        ax1.set_ylim(0, 1100)
-        ax1.grid(True)
-        ax1.legend(loc='lower left', fontsize=8)
+    struct stat st = {0};
+    if (stat("results", &st) == -1) mkdir("results", 0777);
 
-        # Ô 2: Hiệu suất sử dụng đường truyền
-        ax2.clear()
-        ax2.plot(time_data, tcp_eff_data, label='TCP Reno', color='#1f77b4', linewidth=1.5)
-        ax2.plot(time_data, udp_eff_data, label='UDP/UDT-like', color='#2ca02c', linewidth=1.5)
-        ax2.plot(time_data, bbr_eff_data, label='TCP BBR-like', color='#ff7f0e', linewidth=1.5)
-        ax2.axhline(y=100, color='gray', linestyle='--', label='100%')
-        ax2.set_title('Hiệu suất sử dụng đường truyền 1 Gbps', fontsize=9)
-        ax2.set_xlabel('Thời gian (s)')
-        ax2.set_ylabel('Hiệu suất (%)')
-        ax2.set_xlim(0, max_x)
-        ax2.set_ylim(0, 110)
-        ax2.grid(True)
+    // Xây dựng mô hình mạng LFN độc lập cho hai cơ chế so sánh
+    NodeContainer tcpNodes, udpNodes;
+    tcpNodes.Create(2);
+    udpNodes.Create(2);
 
-        # Ô 3: TCP Reno - Cửa sổ truyền và BDP
-        ax3.clear()
-        ax3.plot(time_data, tcp_cwnd_data, label='TCP Reno cwnd', color='#1f77b4', linewidth=1.5)
-        ax3.axhline(y=BDP_MB, color='gray', linestyle='--', label=f'BDP = {BDP_MB:.1f}MB')
-        ax3.set_title('TCP Reno - Cửa sổ truyền và BDP', fontsize=9)
-        ax3.set_xlabel('Thời gian (s)')
-        ax3.set_ylabel('Cửa sổ truyền (MB)')
-        ax3.set_xlim(0, max_x)
-        ax3.set_ylim(0, 85)
-        ax3.grid(True)
-        ax3.legend(loc='lower left', fontsize=8)
+    PointToPointHelper p2p;
+    p2p.SetDeviceAttribute("DataRate", StringValue("1Gbps"));
+    p2p.SetChannelAttribute("Delay", StringValue("300ms")); // 300ms mỗi chiều => RTT = 600ms
 
-        # Ô 4: Nhiễu / mất gói 2%
-        ax4.clear()
-        ax4.plot(time_data, loss_status_data, marker='o', markersize=3, linestyle='-', color='#1f77b4', label='Sự kiện mất gói')
-        ax4.set_title('Nhiễu / mất gói 2%', fontsize=9)
-        ax4.set_xlabel('Thời gian (s)')
-        ax4.set_ylabel('Trạng thái')
-        ax4.set_xlim(0, max_x)
-        ax4.set_ylim(-0.2, 1.2)
-        ax4.set_yticks([0, 1])
-        ax4.set_yticklabels(['Không', 'Có'])
-        ax4.grid(True)
+    NetDeviceContainer tcpDevices = p2p.Install(tcpNodes);
+    NetDeviceContainer udpDevices = p2p.Install(udpNodes);
 
-        plt.tight_layout()
-        plt.draw()
-        plt.pause(0.001)
+    // Mô hình lỗi gói do nhiễu sóng vệ tinh (0.1% packet error rate)
+    Ptr<RateErrorModel> satelliteError = CreateObject<RateErrorModel>();
+    satelliteError->SetAttribute("ErrorRate", DoubleValue(0.001));
+    satelliteError->SetAttribute("ErrorUnit", EnumValue(RateErrorModel::ERROR_UNIT_PACKET));
 
-        # Độ trễ 1.0 giây để chạy chậm rãi
-        time.sleep(0.5)
+    tcpDevices.Get(1)->SetAttribute("ReceiveErrorModel", PointerValue(satelliteError));
+    udpDevices.Get(1)->SetAttribute("ReceiveErrorModel", PointerValue(satelliteError));
 
-    csv_file.close()
-    print("\nMo phong Case 2 hoan tat! Dang mo file Excel ket qua...")
-    
-    # Tự động mở file kết quả bằng phần mềm bảng tính (LibreOffice Calc trên Ubuntu)
-    if os.name == 'posix':
-        os.system("localc case_study2.csv &")
-    elif os.name == 'nt':
-        os.system("start case_study2.csv")
+    InternetStackHelper stack;
+    stack.Install(tcpNodes);
+    stack.Install(udpNodes);
 
-    plt.ioff()
-    plt.show()
+    Ipv4AddressHelper address;
+    address.SetBase("10.20.1.0", "255.255.255.0");
+    Ipv4InterfaceContainer tcpInterfaces = address.Assign(tcpDevices);
 
-if __name__ == "__main__":
-    main()
+    address.SetBase("10.20.2.0", "255.255.255.0");
+    Ipv4InterfaceContainer udpInterfaces = address.Assign(udpDevices);
+
+    // 1. Cấu hình FTP qua TCP NewReno (Dễ bị sụt giảm thông lượng khi gặp lỗi nhiễu sóng)
+    PacketSinkHelper tcpSink("ns3::TcpSocketFactory", InetSocketAddress(Ipv4Address::GetAny(), 9001));
+    ApplicationContainer tcpSinkApp = tcpSink.Install(tcpNodes.Get(1));
+    tcpSinkApp.Start(Seconds(0.5));
+    tcpSinkApp.Stop(Seconds(71.0));
+
+    BulkSendHelper tcpClient("ns3::TcpSocketFactory", InetSocketAddress(tcpInterfaces.GetAddress(1), 9001));
+    tcpClient.SetAttribute("MaxBytes", UintegerValue(0)); // Truyền liên tục mô phỏng file lớn
+    tcpClient.SetAttribute("SendSize", UintegerValue(1448));
+    ApplicationContainer tcpClientApp = tcpClient.Install(tcpNodes.Get(0));
+    tcpClientApp.Start(Seconds(1.0));
+    tcpClientApp.Stop(Seconds(69.5));
+
+    // 2. Cấu hình Reliable UDP / Alternative (Duy trì thông lượng cao trên LFN)
+    PacketSinkHelper udpSink("ns3::UdpSocketFactory", InetSocketAddress(Ipv4Address::GetAny(), 9002));
+    ApplicationContainer udpSinkApp = udpSink.Install(udpNodes.Get(1));
+    udpSinkApp.Start(Seconds(0.5));
+    udpSinkApp.Stop(Seconds(71.0));
+
+    OnOffHelper udpClient("ns3::UdpSocketFactory", InetSocketAddress(udpInterfaces.GetAddress(1), 9002));
+    udpClient.SetAttribute("DataRate", StringValue("950Mbps"));
+    udpClient.SetAttribute("PacketSize", UintegerValue(1448));
+    udpClient.SetAttribute("OnTime", StringValue("ns3::ConstantRandomVariable[Constant=1]"));
+    udpClient.SetAttribute("OffTime", StringValue("ns3::ConstantRandomVariable[Constant=0]"));
+    ApplicationContainer udpClientApp = udpClient.Install(udpNodes.Get(0));
+    udpClientApp.Start(Seconds(1.0));
+    udpClientApp.Stop(Seconds(69.5));
+
+    // Kích hoạt FlowMonitor quản lý luồng
+    flowMonitor = flowHelper.InstallAll();
+    classifier = DynamicCast<Ipv4FlowClassifier>(flowHelper.GetClassifier());
+
+    csv.open("results/case2.csv");
+    csv << "time,protocol,throughput_mbps,utilization_percent,latency_ms,total_bytes\n";
+
+    Simulator::Schedule(Seconds(1.5), &SavePerformanceMetrics);
+
+    std::cout << "==========================================================" << std::endl;
+    std::cout << "  CHẠY MÔ PHỎNG CASE STUDY 2: MẠNG LFN (1Gbps, RTT 600ms)" << std::endl;
+    std::cout << "==========================================================" << std::endl;
+
+    Simulator::Stop(Seconds(70.5));
+    Simulator::Run();
+
+    flowMonitor->CheckForLostPackets();
+    flowMonitor->SerializeToXmlFile("results/case2_flowmon.xml", true, true);
+    csv.close();
+
+    std::cout << "=> MÔ PHỎNG HOÀN TẤT! ĐÃ XUẤT KẾT QUẢ RA results/case2.csv\n";
+    Simulator::Destroy();
+    return 0;
+}

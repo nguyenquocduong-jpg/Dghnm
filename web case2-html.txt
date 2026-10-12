@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Báo Cáo Chuyên Sâu Case Study 2: Long Fat Networks (LFN)</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #f4f7f6; color: #333; padding: 20px; }
+        .container { max-width: 1200px; margin: auto; background: #fff; padding: 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        h1 { text-align: center; color: #1a365d; font-size: 22px; }
+        .subtitle { text-align: center; color: #718096; margin-bottom: 25px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 15px; margin-bottom: 30px; }
+        .card { background: #ebf8ff; border-left: 5px solid #3182ce; padding: 15px; border-radius: 8px; }
+        .card.danger { background: #fff5f5; border-left-color: #e53e3e; }
+        .card.success { background: #f0fff4; border-left-color: #38a169; }
+        .card.warning { background: #fffaf0; border-left-color: #dd6b20; }
+        .card-title { font-size: 13px; color: #4a5568; font-weight: bold; }
+        .card-value { font-size: 14px; font-weight: bold; margin-top: 5px; color: #2d3748; line-height: 1.4; }
+        
+        .charts-container { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .chart-box { background: #fff; padding: 20px; border: 1px solid #e2e8f0; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.03); }
+        .full-width { grid-column: 1 / -1; }
+        .chart-box h3 { margin-top: 0; color: #2c5282; text-align: center; font-size: 15px; }
+        
+        .analysis-box { margin-top: 30px; background: #f7fafc; padding: 20px; border-radius: 8px; border: 1px solid #e2e8f0; }
+        .analysis-box h3 { color: #1a365d; margin-top: 0; }
+        .analysis-box ul { padding-left: 20px; line-height: 1.6; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>CASE STUDY 2: PHÂN TÍCH HIỆU SUẤT TRUYỀN DỮ LIỆU TRÊN MẠNG LFN (1 Gbps, RTT 600ms)</h1>
+    <p class="subtitle">Đánh giá tác động của nhiễu sóng vệ tinh (0.1% lỗi gói) và phân tích quy mô tải tập dữ liệu 50GB</p>
+
+    <!-- Thẻ thống kê thông số chuẩn LFN -->
+    <div class="stats-grid">
+        <div class="card warning">
+            <div class="card-title">Đặc tính Đường truyền LFN</div>
+            <div class="card-value">1 Gbps | RTT 600ms <br>BDP lý thuyết = 75 MB (~600 Mb)</div>
+        </div>
+        <div class="card danger">
+            <div class="card-title">TCP NewReno (Truyền Thống)</div>
+            <div class="card-value">Nhầm nhiễu sóng (0.1%) là tắc nghẽn &rarr; Cắt cửa sổ truyền &rarr; Sụt giảm thông lượng</div>
+        </div>
+        <div class="card success">
+            <div class="card-title">Reliable UDP / Giải pháp</div>
+            <div class="card-value">Khôi phục lỗi ở tầng ứng dụng, duy trì tốc độ cao ổn định trên đường ống dài</div>
+        </div>
+        <div class="card success">
+            <div class="card-title">Quy mô Phân tích Dataset</div>
+            <div class="card-value">Tiến độ và Dự phóng Tải dữ liệu 50 GB</div>
+        </div>
+    </div>
+
+    <!-- Hệ thống 5 Biểu đồ phân tích chuyên sâu -->
+    <div class="charts-container">
+        <div class="chart-box full-width">
+            <h3>1. So Sánh Thông Lượng Thực Tế (Throughput - Mbps)</h3>
+            <canvas id="throughputChart"></canvas>
+        </div>
+        <div class="chart-box">
+            <h3>2. Hiệu Suất Sử Dụng Đường Truyền (Utilization %)</h3>
+            <canvas id="utilChart"></canvas>
+        </div>
+        <div class="chart-box">
+            <h3>3. Tổng Dung Lượng Tích Lũy Trong Cửa Sổ Mô Phỏng (MB)</h3>
+            <canvas id="bytesChart"></canvas>
+        </div>
+        <div class="chart-box full-width">
+            <h3>4. Tiến Độ Truyền Tải So Với Quy Mô Tập Dữ Liệu 50GB (Dataset Scale Analysis)</h3>
+            <canvas id="dataset50GBChart"></canvas>
+        </div>
+        <div class="chart-box full-width">
+            <h3>5. Đánh Giá Độ Trễ và Tác Động Nhiễu Sóng Vệ Tinh (Latency - ms)</h3>
+            <canvas id="latencyChart"></canvas>
+        </div>
+    </div>
+
+    <!-- Khung nhận xét chuyên môn -->
+    <div class="analysis-box">
+        <h3>Nhận Xét Kết Quả & Phân Tích Quy Mô 50GB:</h3>
+        <ul>
+            <li><strong>Đặc điểm LFN & BDP lớn:</strong> Với băng thông 1 Gbps và độ trễ RTT 600ms, đường truyền cần không gian đệm cực lớn để lấp đầy ống truyền tải dữ liệu.</li>
+            <li><strong>Điểm yếu của TCP NewReno:</strong> Khi xuất hiện tỷ lệ lỗi gói 0.1% do nhiễu sóng vệ tinh, TCP NewReno tự động giảm `cwnd`, làm sụt giảm thông lượng và kéo dài thời gian hoàn thành tác vụ truyền dữ liệu quy mô lớn (50GB).</li>
+            <li><strong>Phân tích Dataset 50GB:</strong> Biểu đồ thứ 4 mô phỏng tiến độ đạt tới mốc 50GB (51,200 MB), cho thấy Reliable UDP vượt trội hơn hẳn trong việc duy trì tốc độ cao liên tục, giúp rút ngắn đáng kể thời gian xử lý toàn bộ tập dữ liệu.</li>
+        </ul>
+    </div>
+</div>
+
+<script>
+    async function loadData() {
+        try {
+            let response = await fetch('../results/case2.csv');
+            if (!response.ok) response = await fetch('/results/case2.csv');
+            const text = await response.text();
+            const lines = text.trim().split('\n').slice(1);
+            
+            const labels = [];
+            const tcpTp = [], udpTp = [];
+            const tcpUtil = [], udpUtil = [];
+            const tcpBytes = [], udpBytes = [];
+            const tcpDatasetPct = [], udpDatasetPct = [];
+            const tcpLat = [], udpLat = [];
+
+            const TARGET_50GB_MB = 50 * 1024; // 50GB = 51,200 MB
+
+            lines.forEach(line => {
+                const cols = line.split(',');
+                if (cols.length >= 6) {
+                    const time = cols[0] + 's';
+                    if (!labels.includes(time)) labels.push(time);
+                    
+                    const proto = cols[1];
+                    const tp = parseFloat(cols[2]);
+                    const util = parseFloat(cols[3]);
+                    const lat = parseFloat(cols[4]);
+                    const bytesMB = parseFloat(cols[5]) / (1024 * 1024);
+
+                    if (proto === 'TCP_NewReno') {
+                        tcpTp.push(tp);
+                        tcpUtil.push(util);
+                        tcpBytes.push(bytesMB);
+                        // Tỷ lệ phần trăm hoàn thành 50GB (giả lập tích lũy tuyến tính theo thông lượng thực tế)
+                        tcpDatasetPct.push(Math.min(100, (bytesMB / TARGET_50GB_MB) * 100));
+                        tcpLat.push(lat);
+                    } else if (proto === 'Reliable_UDP') {
+                        udpTp.push(tp);
+                        udpUtil.push(util);
+                        udpBytes.push(bytesMB);
+                        udpDatasetPct.push(Math.min(100, (bytesMB / TARGET_50GB_MB) * 100));
+                        udpLat.push(lat);
+                    }
+                }
+            });
+
+            // 1. Throughput Chart
+            new Chart(document.getElementById('throughputChart'), {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: 'TCP NewReno Throughput (Mbps)', data: tcpTp, borderColor: '#e53e3e', borderWidth: 2, fill: false, pointRadius: 0 },
+                        { label: 'Reliable UDP Throughput (Mbps)', data: udpTp, borderColor: '#38a169', backgroundColor: 'rgba(56, 161, 105, 0.1)', fill: true, borderWidth: 2, pointRadius: 0 }
+                    ]
+                },
+                options: { responsive: true, scales: { y: { min: 0 } } }
+            });
+
+            // 2. Utilization Chart
+            new Chart(document.getElementById('utilChart'), {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: 'TCP NewReno Utilization (%)', data: tcpUtil, borderColor: '#3182ce', borderWidth: 2, fill: false, pointRadius: 0 },
+                        { label: 'Reliable UDP Utilization (%)', data: udpUtil, borderColor: '#d69e2e', borderWidth: 2, fill: false, pointRadius: 0 }
+                    ]
+                },
+                options: { responsive: true, scales: { y: { min: 0, max: 100 } } }
+            });
+
+            // 3. Bytes Chart
+            new Chart(document.getElementById('bytesChart'), {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: 'TCP NewReno Total Data (MB)', data: tcpBytes, borderColor: '#805ad5', borderWidth: 2, fill: false, pointRadius: 0 },
+                        { label: 'Reliable UDP Total Data (MB)', data: udpBytes, borderColor: '#38a169', backgroundColor: 'rgba(56, 161, 105, 0.1)', fill: true, borderWidth: 2, pointRadius: 0 }
+                    ]
+                },
+                options: { responsive: true, scales: { y: { min: 0 } } }
+            });
+
+            // 4. Dataset 50GB Scale Analysis Chart
+            new Chart(document.getElementById('dataset50GBChart'), {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: 'TCP NewReno - Tiến độ tải 50GB (%)', data: tcpDatasetPct, borderColor: '#e53e3e', borderWidth: 2, fill: false, pointRadius: 0 },
+                        { label: 'Reliable UDP - Tiến độ tải 50GB (%)', data: udpDatasetPct, borderColor: '#3182ce', backgroundColor: 'rgba(49, 130, 206, 0.1)', fill: true, borderWidth: 2, pointRadius: 0 }
+                    ]
+                },
+                options: { responsive: true, scales: { y: { min: 0, max: 100 } } }
+            });
+
+            // 5. Latency Chart
+            new Chart(document.getElementById('latencyChart'), {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: 'TCP NewReno Latency (ms)', data: tcpLat, borderColor: '#e53e3e', borderWidth: 2, fill: false, pointRadius: 0 },
+                        { label: 'Reliable UDP Latency (ms)', data: udpLat, borderColor: '#3182ce', borderWidth: 2, fill: false, pointRadius: 0 }
+                    ]
+                },
+                options: { responsive: true, scales: { y: { min: 0 } } }
+            });
+
+        } catch (error) {
+            console.error('Lỗi khi đọc file CSV:', error);
+        }
+    }
+
+    loadData();
+</script>
+
+</body>
+</html>
